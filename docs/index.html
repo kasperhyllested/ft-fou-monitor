@@ -91,7 +91,7 @@ ul.tags li {
   <div class="container">
     <header>
       <h1>FOU Monitor</h1>
-      <div class="meta">Automatisk vurdering af Folketingets FOU-dokumenter med fokus på anskaffelser, kapaciteter og forsvarsindustri. Senest opdateret: 16.03.2026 21:46</div>
+      <div class="meta">Automatisk vurdering af Folketingets FOU-dokumenter med fokus på anskaffelser, kapaciteter og forsvarsindustri. Senest opdateret: 16.03.2026 22:04</div>
       <div class="meta"><a href="./feed.xml">Åbn filtreret RSS-feed</a></div>
     </header>
     <section class="stats"><div class="stat"><div class="small">Samlet</div><div style="font-size:28px;font-weight:700">0</div></div><div class="stat"><div class="small">Score 5</div><div style="font-size:28px;font-weight:700">0</div></div><div class="stat"><div class="small">Score 4</div><div style="font-size:28px;font-weight:700">0</div></div><div class="stat"><div class="small">Score 3</div><div style="font-size:28px;font-weight:700">0</div></div></section>
@@ -130,10 +130,6 @@ function tags(items) {
 }
 
 function card(doc) {
-  const sourceNote = doc.fetch_mode === 'rss_fallback'
-    ? '<div class="small" style="margin-top:8px"><em>Bemærk: vurderet på RSS-data, fordi dokumentsiden ikke kunne hentes automatisk.</em></div>'
-    : '';
-
   return `
     <article class="card">
       <div class="card-top">
@@ -144,7 +140,7 @@ function card(doc) {
         <div class="badge">${doc.score}/5</div>
       </div>
       <p>${doc.summary || ''}</p>
-      ${sourceNote}
+      <div class="small" style="margin-top:8px"><em>Vurderet på RSS-data.</em></div>
       <div class="facts">
         <div><strong>Spørger</strong><br>${doc.asker || 'Ukendt'}</div>
         <div><strong>Adressat</strong><br>${doc.recipient || 'Ukendt'}</div>
