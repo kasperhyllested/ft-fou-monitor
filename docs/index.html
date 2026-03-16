@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="da">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FOU Monitor</title>
+  <style>
+:root {
+  color-scheme: light;
+  --bg: #f7f8fa;
+  --card: #ffffff;
+  --border: #d9dee7;
+  --text: #16202a;
+  --muted: #5b6878;
+  --accent: #0b5cab;
+}
+body {
+  font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  margin: 0;
+}
+.container {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 24px;
+}
+header { margin-bottom: 20px; }
+h1 { margin: 0 0 8px; font-size: 32px; }
+.meta { color: var(--muted); }
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin: 20px 0 24px;
+}
+.stat, .card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+}
+.controls {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+select, input {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: white;
+}
+.card { margin-bottom: 14px; }
+.card-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+}
+.badge {
+  display: inline-block;
+  min-width: 48px;
+  text-align: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-weight: 700;
+  background: #ebf3ff;
+  color: var(--accent);
+}
+.small { color: var(--muted); font-size: 14px; }
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+ul.tags { list-style: none; padding: 0; margin: 6px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
+ul.tags li {
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: #eef2f7;
+  font-size: 13px;
+}
+</style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>FOU Monitor</h1>
+      <div class="meta">Automatisk vurdering af Folketingets FOU-dokumenter med fokus på anskaffelser, kapaciteter og forsvarsindustri. Senest opdateret: 16.03.2026 21:46</div>
+      <div class="meta"><a href="./feed.xml">Åbn filtreret RSS-feed</a></div>
+    </header>
+    <section class="stats"><div class="stat"><div class="small">Samlet</div><div style="font-size:28px;font-weight:700">0</div></div><div class="stat"><div class="small">Score 5</div><div style="font-size:28px;font-weight:700">0</div></div><div class="stat"><div class="small">Score 4</div><div style="font-size:28px;font-weight:700">0</div></div><div class="stat"><div class="small">Score 3</div><div style="font-size:28px;font-weight:700">0</div></div></section>
+    <section class="controls">
+      <select id="minScore">
+        <option value="4" selected>Vis score 4-5</option>
+        <option value="3">Vis score 3-5</option>
+        <option value="1">Vis alle</option>
+      </select>
+      <select id="docType"></select>
+      <input id="search" type="search" placeholder="Søg i emner, virksomheder, kapaciteter">
+    </section>
+    <section id="list"></section>
+  </div>
+  <script>window.DOCS = [];</script>
+  <script>
+const docs = window.DOCS || [];
+const listEl = document.getElementById('list');
+const scoreEl = document.getElementById('minScore');
+const typeEl = document.getElementById('docType');
+const searchEl = document.getElementById('search');
+
+function uniq(values) {
+  return [...new Set(values.filter(Boolean))].sort();
+}
+
+function renderOptions() {
+  const types = uniq(docs.map(d => d.feed_name));
+  typeEl.innerHTML = '<option value="">Alle feedtyper</option>' +
+    types.map(t => `<option value="${t}">${t}</option>`).join('');
+}
+
+function tags(items) {
+  if (!items || !items.length) return '';
+  return `<ul class="tags">${items.slice(0, 8).map(i => `<li>${i}</li>`).join('')}</ul>`;
+}
+
+function card(doc) {
+  const sourceNote = doc.fetch_mode === 'rss_fallback'
+    ? '<div class="small" style="margin-top:8px"><em>Bemærk: vurderet på RSS-data, fordi dokumentsiden ikke kunne hentes automatisk.</em></div>'
+    : '';
+
+  return `
+    <article class="card">
+      <div class="card-top">
+        <div>
+          <div class="small">${doc.feed_name} · ${doc.document_type || doc.source_type || ''}</div>
+          <h3>${doc.title_better || doc.title}</h3>
+        </div>
+        <div class="badge">${doc.score}/5</div>
+      </div>
+      <p>${doc.summary || ''}</p>
+      ${sourceNote}
+      <div class="facts">
+        <div><strong>Spørger</strong><br>${doc.asker || 'Ukendt'}</div>
+        <div><strong>Adressat</strong><br>${doc.recipient || 'Ukendt'}</div>
+        <div><strong>Emne</strong><br>${doc.main_topic || 'Ukendt'}</div>
+        <div><strong>Anskaffelsesrelevans</strong><br>${doc.procurement_relevance ? 'Ja' : 'Nej'}</div>
+      </div>
+      <div class="small" style="margin-top:12px"><strong>Hvorfor relevant:</strong> ${doc.why_relevant || ''}</div>
+      <div class="small" style="margin-top:10px"><strong>Virksomheder:</strong> ${doc.companies_mentioned?.join(', ') || 'Ingen nævnt'}</div>
+      ${tags([...(doc.capabilities_mentioned || []), ...(doc.authorities_mentioned || []), ...(doc.programs_or_bills_mentioned || [])])}
+      <div style="margin-top:12px"><a href="${doc.link}" target="_blank" rel="noopener noreferrer">Åbn original</a></div>
+    </article>
+  `;
+}
+
+function render() {
+  const minScore = Number(scoreEl.value || 1);
+  const type = typeEl.value;
+  const term = (searchEl.value || '').toLowerCase().trim();
+
+  const filtered = docs.filter(doc => {
+    if ((doc.score || 0) < minScore) return false;
+    if (type && doc.feed_name !== type) return false;
+    if (!term) return true;
+    const haystack = JSON.stringify(doc).toLowerCase();
+    return haystack.includes(term);
+  });
+
+  listEl.innerHTML = filtered.map(card).join('') || '<p>Ingen dokumenter matcher filtrene.</p>';
+}
+
+renderOptions();
+render();
+scoreEl.addEventListener('change', render);
+typeEl.addEventListener('change', render);
+searchEl.addEventListener('input', render);
+</script>
+</body>
+</html>
