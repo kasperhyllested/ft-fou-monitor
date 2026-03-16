@@ -19,7 +19,7 @@ from pypdf import PdfReader
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
-SITE_DIR = BASE_DIR / "site"
+SITE_DIR = BASE_DIR / "docs"
 DOCS_JSON = DATA_DIR / "documents.json"
 SEEN_JSON = DATA_DIR / "seen_ids.json"
 
