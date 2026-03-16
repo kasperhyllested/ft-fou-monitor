@@ -11,7 +11,7 @@ from xml.sax.saxutils import escape
 
 import feedparser
 from bs4 import BeautifulSoup
-from openai import OpenAI
+from openai import OpenAI, APIConnectionError, APITimeoutError, RateLimitError
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
@@ -290,7 +290,11 @@ def extract_json(text: str) -> Dict[str, Any]:
     return json.loads(match.group(0))
 
 def analyze_with_openai(entry: Dict[str, Any]) -> Dict[str, Any]:
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    client = OpenAI(
+        api_key=os.environ["OPENAI_API_KEY"],
+        timeout=60.0,
+        max_retries=3,
+    )
     model = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 
     payload = f"""
@@ -305,17 +309,31 @@ RSS-RESUMÉ
 {entry['summary']}
 """.strip()
 
-    response = client.responses.create(
-        model=model,
-        input=[
-            {"role": "system", "content": PROMPT},
-            {"role": "user", "content": payload},
-        ],
-    )
-    output_text = getattr(response, "output_text", None)
-    if not output_text:
-        output_text = str(response)
-    return extract_json(output_text)
+    last_exc = None
+
+    for attempt in range(4):
+        try:
+            response = client.responses.create(
+                model=model,
+                input=[
+                    {"role": "system", "content": PROMPT},
+                    {"role": "user", "content": payload},
+                ],
+            )
+            output_text = getattr(response, "output_text", None)
+            if not output_text:
+                output_text = str(response)
+            return extract_json(output_text)
+
+        except (APIConnectionError, APITimeoutError, RateLimitError) as exc:
+            last_exc = exc
+            wait_seconds = 3 * (attempt + 1)
+            print(f"OpenAI retry {attempt + 1}/4 for {entry['uid']}: {type(exc).__name__}: {exc}")
+            time.sleep(wait_seconds)
+
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Ukendt OpenAI-fejl")
 
 def normalize_result(entry: Dict[str, Any], analysis: Dict[str, Any]) -> Dict[str, Any]:
     def as_list(value: Any) -> List[str]:
@@ -431,9 +449,25 @@ def build_html(documents: List[Dict[str, Any]]) -> str:
   <script>{JS}</script>
 </body>
 </html>"""
+    
+def smoke_test_openai() -> None:
+    client = OpenAI(
+        api_key=os.environ["OPENAI_API_KEY"],
+        timeout=30.0,
+        max_retries=2,
+    )
+    model = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 
+    response = client.responses.create(
+        model=model,
+        input="Svar kun med ordet OK.",
+    )
+
+    output_text = getattr(response, "output_text", "") or ""
+    print(f"OpenAI smoke test OK: {output_text[:50]}")
 def main() -> None:
     ensure_dirs()
+    smoke_test_openai()
     existing_docs = load_json(DOCS_JSON, [])
     seen_ids = set(load_json(SEEN_JSON, []))
     entries = fetch_feed_entries()
