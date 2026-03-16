@@ -5,17 +5,17 @@ import re
 import time
 import html
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from urllib.parse import urljoin
+from xml.sax.saxutils import escape
 
 import feedparser
 import requests
 from bs4 import BeautifulSoup
 from openai import OpenAI
 from pypdf import PdfReader
-from io import BytesIO
-from xml.sax.saxutils import escape
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
@@ -62,6 +62,8 @@ Ignorér normalt emner som:
 - interne HR-forhold
 - generelle trivsels- eller arbejdspladssager
 medmindre de meget konkret påvirker anskaffelser, kontrakter, kapaciteter eller industrien.
+
+Hvis der kun foreligger RSS-data og ikke fuld dokumenttekst, skal du stadig levere det bedste mulige estimat ud fra titel, metadata og RSS-resumé. I så fald skal du være forsigtig, men stadig konservativ i relevansvurderingen.
 
 Returnér kun gyldig JSON i dette format:
 {
@@ -194,6 +196,10 @@ function tags(items) {
 }
 
 function card(doc) {
+  const sourceNote = doc.fetch_mode === 'rss_fallback'
+    ? '<div class="small" style="margin-top:8px"><em>Bemærk: vurderet på RSS-data, fordi dokumentsiden ikke kunne hentes automatisk.</em></div>'
+    : '';
+
   return `
     <article class="card">
       <div class="card-top">
@@ -204,6 +210,7 @@ function card(doc) {
         <div class="badge">${doc.score}/5</div>
       </div>
       <p>${doc.summary || ''}</p>
+      ${sourceNote}
       <div class="facts">
         <div><strong>Spørger</strong><br>${doc.asker || 'Ukendt'}</div>
         <div><strong>Adressat</strong><br>${doc.recipient || 'Ukendt'}</div>
@@ -240,6 +247,27 @@ scoreEl.addEventListener('change', render);
 typeEl.addEventListener('change', render);
 searchEl.addEventListener('input', render);
 """
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/123.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "da-DK,da;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Referer": "https://www.ft.dk/",
+}
+
+PDF_HEADERS = {
+    **HEADERS,
+    "Accept": "application/pdf,application/octet-stream;q=0.9,*/*;q=0.8",
+}
+
+SESSION = requests.Session()
+SESSION.headers.update(HEADERS)
 
 
 def ensure_dirs() -> None:
@@ -278,9 +306,34 @@ def fetch_feed_entries() -> List[Dict[str, Any]]:
 
 
 def clean_text(text: str) -> str:
-    text = html.unescape(text)
+    text = html.unescape(text or "")
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+
+def http_get(url: str, timeout: int = 45, accept_pdf: bool = False) -> requests.Response:
+    headers = PDF_HEADERS if accept_pdf else HEADERS
+    last_exc = None
+
+    for attempt in range(3):
+        try:
+            response = SESSION.get(
+                url,
+                timeout=timeout,
+                headers=headers,
+                allow_redirects=True,
+            )
+            response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt < 2:
+                time.sleep(2 + attempt)
+            continue
+
+    if last_exc:
+        raise last_exc
+    raise RuntimeError(f"Ukendt fejl ved hentning af {url}")
 
 
 def extract_pdf_links(soup: BeautifulSoup, base_url: str) -> List[str]:
@@ -290,6 +343,7 @@ def extract_pdf_links(soup: BeautifulSoup, base_url: str) -> List[str]:
         absolute = urljoin(base_url, href)
         if ".pdf" in absolute.lower():
             links.append(absolute)
+
     seen = set()
     result = []
     for link in links:
@@ -301,8 +355,7 @@ def extract_pdf_links(soup: BeautifulSoup, base_url: str) -> List[str]:
 
 def extract_pdf_text(url: str) -> str:
     try:
-        response = requests.get(url, timeout=45)
-        response.raise_for_status()
+        response = http_get(url, timeout=60, accept_pdf=True)
         reader = PdfReader(BytesIO(response.content))
         pages = []
         for page in reader.pages[:8]:
@@ -312,42 +365,71 @@ def extract_pdf_text(url: str) -> str:
         return f"[Kunne ikke læse PDF: {exc}]"
 
 
-def extract_document_text(url: str) -> Dict[str, Any]:
-    response = requests.get(url, timeout=45, headers={"User-Agent": "Mozilla/5.0"})
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
+def extract_document_text(url: str, rss_summary: str = "", rss_title: str = "") -> Dict[str, Any]:
+    try:
+        response = http_get(url, timeout=45, accept_pdf=False)
+        soup = BeautifulSoup(response.text, "html.parser")
 
-    selectors = [
-        "main",
-        "article",
-        ".content-area",
-        ".article-content",
-        ".main-content",
-        "body",
-    ]
-    text = ""
-    for selector in selectors:
-        node = soup.select_one(selector)
-        if node:
-            text = node.get_text(" ", strip=True)
-            if len(text) > 500:
-                break
-    text = clean_text(text)[:18000]
-    pdf_links = extract_pdf_links(soup, url)
-    pdf_texts = []
-    for pdf_url in pdf_links:
-        pdf_texts.append(extract_pdf_text(pdf_url))
-        time.sleep(1)
+        selectors = [
+            "main",
+            "article",
+            ".content-area",
+            ".article-content",
+            ".main-content",
+            "#main",
+            "body",
+        ]
 
-    combined = text
-    if pdf_texts:
-        combined += "\n\nVEDHÆFTET PDF-TEKST:\n" + "\n\n".join(pdf_texts)
+        text = ""
+        for selector in selectors:
+            node = soup.select_one(selector)
+            if node:
+                text = node.get_text(" ", strip=True)
+                if len(text) > 500:
+                    break
 
-    return {
-        "page_title": clean_text(soup.title.get_text()) if soup.title else "",
-        "text": combined[:22000],
-        "pdf_links": pdf_links,
-    }
+        text = clean_text(text)[:18000]
+        pdf_links = extract_pdf_links(soup, url)
+        pdf_texts = []
+
+        for pdf_url in pdf_links:
+            pdf_texts.append(extract_pdf_text(pdf_url))
+            time.sleep(1)
+
+        combined = text
+        if pdf_texts:
+            combined += "\n\nVEDHÆFTET PDF-TEKST:\n" + "\n\n".join(pdf_texts)
+
+        if not combined.strip():
+            combined = clean_text(f"RSS-titel: {rss_title}\nRSS-resumé: {rss_summary}")
+
+        return {
+            "page_title": clean_text(soup.title.get_text()) if soup.title else "",
+            "text": combined[:22000],
+            "pdf_links": pdf_links,
+            "fetch_mode": "full_document",
+        }
+
+    except Exception as exc:
+        fallback_text = clean_text(
+            f"""
+            DOKUMENTSIDE KUNNE IKKE HENTES AUTOMATISK.
+            Fejl: {exc}
+
+            RSS-TITEL:
+            {rss_title}
+
+            RSS-RESUMÉ:
+            {rss_summary}
+            """
+        )[:22000]
+
+        return {
+            "page_title": rss_title,
+            "text": fallback_text,
+            "pdf_links": [],
+            "fetch_mode": "rss_fallback",
+        }
 
 
 def extract_json(text: str) -> Dict[str, Any]:
@@ -369,6 +451,7 @@ METADATA
 - Link: {entry['link']}
 - Publiceret: {entry['published']}
 - Sidetitel: {document.get('page_title', '')}
+- Datagrundlag: {document.get('fetch_mode', 'ukendt')}
 
 RSS-RESUMÉ
 {entry['summary']}
@@ -411,6 +494,7 @@ def normalize_result(entry: Dict[str, Any], document: Dict[str, Any], analysis: 
         "source_type": entry["source_type"],
         "page_title": document.get("page_title", ""),
         "pdf_links": document.get("pdf_links", []),
+        "fetch_mode": document.get("fetch_mode", "unknown"),
         "score": score,
         "title_better": analysis.get("title_better", entry["title"]),
         "summary": analysis.get("summary", ""),
@@ -433,16 +517,25 @@ def build_feed(documents: List[Dict[str, Any]]) -> str:
     for doc in documents:
         if doc["score"] < 4:
             continue
-        description = escape(
-            f"Score: {doc['score']}/5\n{doc.get('summary', '')}\nHvorfor relevant: {doc.get('why_relevant', '')}"
-        )
+
+        description_lines = [
+            f"Score: {doc['score']}/5",
+            doc.get("summary", ""),
+            f"Hvorfor relevant: {doc.get('why_relevant', '')}",
+        ]
+        if doc.get("fetch_mode") == "rss_fallback":
+            description_lines.append("Bemærk: vurderet på RSS-data, fordi dokumentsiden ikke kunne hentes automatisk.")
+
+        description = escape("\n".join([line for line in description_lines if line]))
         title = escape(f"[{doc['score']}/5] {doc.get('title_better') or doc.get('title')}")
         link = escape(doc["link"])
         pub = escape(doc.get("published") or doc.get("processed_at"))
         guid = escape(doc["uid"])
+
         items.append(
             f"<item><title>{title}</title><link>{link}</link><guid>{guid}</guid><pubDate>{pub}</pubDate><description>{description}</description></item>"
         )
+
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<rss version="2.0"><channel>'
@@ -467,6 +560,7 @@ def build_html(documents: List[Dict[str, Any]]) -> str:
         f'<div class="stat"><div class="small">{k}</div><div style="font-size:28px;font-weight:700">{v}</div></div>'
         for k, v in stats.items()
     )
+
     return f"""<!doctype html>
 <html lang="da">
 <head>
@@ -511,7 +605,11 @@ def main() -> None:
     for entry in new_entries:
         try:
             print(f"Behandler: {entry['title']}")
-            document = extract_document_text(entry["link"])
+            document = extract_document_text(
+                entry["link"],
+                rss_summary=entry.get("summary", ""),
+                rss_title=entry.get("title", ""),
+            )
             analysis = analyze_with_openai(entry, document)
             processed.append(normalize_result(entry, document, analysis))
             seen_ids.add(entry["uid"])
